@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <title>Smart Bulk Resizer - ZIP Version</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;600&display=swap');
+        body { font-family: 'Kanit', sans-serif; background-color: #f0f2f5; display: flex; flex-direction: column; align-items: center; padding: 40px; }
+        .container { background: white; padding: 30px; border-radius: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); width: 100%; max-width: 650px; text-align: center; }
+        .upload-box { border: 3px dashed #007bff; padding: 30px; border-radius: 12px; cursor: pointer; background: #f0f7ff; margin-bottom: 20px; transition: 0.3s; }
+        .upload-box:hover { background: #e2efff; }
+
+        .slider-container {
+            position: relative;
+            width: 100%; height: 110px; background: #e9ecef; border-radius: 55px;
+            display: none; align-items: center; margin: 25px 0; overflow: hidden;
+            box-shadow: inset 0 3px 6px rgba(0,0,0,0.1); user-select: none;
+        }
+        .slider-text { width: 100%; text-align: center; color: #6c757d; font-weight: bold; font-size: 18px; z-index: 1; pointer-events: none; }
+        .cart-handle {
+            position: absolute; left: 5px; width: 100px; height: 100px;
+            background-image: url('https://drive.google.com/thumbnail?id=1OQR1lDbavCtrcbyCiN0WKK3PPHbd6Y95&sz=w200');
+            background-size: contain; background-repeat: no-repeat; background-position: center;
+            background-color: white; border-radius: 50%; cursor: grab; z-index: 2; box-shadow: 0 5px 15px rgba(0,0,0,0.25);
+        }
+
+        .preview-container { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; margin-top: 20px; }
+        canvas { width: 100%; border-radius: 8px; border: 1px solid #ddd; }
+        #loading { display: none; color: #007bff; font-weight: bold; margin: 10px 0; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>🛒 ระบบแก้ไขตำแหน่งสินค้า Bulk</h1>
+    <p>ตัดขอบขาวอัตโนมัติ | จัดกึ่งกลาง | เว้นขอบ 1 นิ้ว</p>
+
+    <div class="upload-box" onclick="document.getElementById('fileInput').click()">
+        <strong>คลิกเพื่ออัปโหลดหลายรูปภาพ (JPEG)</strong>
+        <input type="file" id="fileInput" accept="image/jpeg, image/jpg" multiple style="display:none">
+    </div>
+
+    <div id="loading">กำลังประมวลผล... กรุณารอสักครู่</div>
+
+    <div id="sliderWrapper" class="slider-container">
+        <span class="slider-text">เข็นรถเพื่อโหลดไฟล์ ZIP >>></span>
+        <div id="cartBtn" class="cart-handle"></div>
+    </div>
+
+    <div id="previewContainer" class="preview-container"></div>
+</div>
+
+<script>
+    const fileInput = document.getElementById('fileInput');
+    const previewContainer = document.getElementById('previewContainer');
+    const sliderWrapper = document.getElementById('sliderWrapper');
+    const cartBtn = document.getElementById('cartBtn');
+    const loading = document.getElementById('loading');
+    let processedFiles = [];
+
+    fileInput.addEventListener('change', async function(e) {
+        const files = Array.from(e.target.files);
+        if (files.length === 0) return;
+
+        previewContainer.innerHTML = '';
+        processedFiles = [];
+        sliderWrapper.style.display = 'none';
+        loading.style.display = 'block';
+
+        for (const file of files) {
+            await processImage(file);
+        }
+
+        loading.style.display = 'none';
+        if (processedFiles.length > 0) {
+            sliderWrapper.style.display = 'flex';
+            resetSlider();
+        }
+    });
+
+    // ฟังก์ชันตัดขอบขาวที่ปรับปรุงให้ฉลาดขึ้น
+    function getBoundingBox(img) {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0);
+
+        const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        let minX = canvas.width, minY = canvas.height, maxX = 0, maxY = 0;
+
+        for (let y = 0; y < canvas.height; y++) {
+            for (let x = 0; x < canvas.width; x++) {
+                const i = (y * canvas.width + x) * 4;
+                // ตรวจหาพิกเซลที่ไม่ใช่สีขาว (ยอมรับสีเทาอ่อนๆ หรือสีขาวไม่สนิท)
+                if (data[i] < 252 || data[i+1] < 252 || data[i+2] < 252) {
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+        }
+
+        if (maxX <= minX) return { x: 0, y: 0, w: img.width, h: img.height };
+        
+        // เพิ่ม Padding 5px รอบตัวสินค้า
+        const p = 5;
+        return {
+            x: Math.max(0, minX - p),
+            y: Math.max(0, minY - p),
+            w: Math.min(img.width - minX, (maxX - minX) + (p * 2)),
+            h: Math.min(img.height - minY, (maxY - minY) + (p * 2))
+        };
+    }
+
+    function processImage(file) {
+        return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = 1000; canvas.height = 1000;
+                    const ctx = canvas.getContext('2d');
+                    ctx.fillStyle = "white";
+                    ctx.fillRect(0, 0, 1000, 1000);
+
+                    const box = getBoundingBox(img);
+                    const margin = 96; // 1 นิ้ว
+                    const drawArea = 1000 - (margin * 2);
+
+                    const ratio = Math.min(drawArea / box.w, drawArea / box.h);
+                    const fw = box.w * ratio;
+                    const fh = box.h * ratio;
+
+                    ctx.drawImage(img, box.x, box.y, box.w, box.h, (1000 - fw) / 2, (1000 - fh) / 2, fw, fh);
+
+                    previewContainer.appendChild(canvas);
+                    processedFiles.push({ canvas: canvas, name: file.name });
+                    resolve();
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+    }
+
+    // ระบบสไลด์รถเข็น
+    let isDragging = false, startX;
+    cartBtn.addEventListener('mousedown', (e) => { isDragging = true; startX = e.pageX - cartBtn.offsetLeft; cartBtn.style.transition = 'none'; });
+    window.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        let x = e.pageX - startX;
+        const max = sliderWrapper.offsetWidth - cartBtn.offsetWidth - 5;
+        if (x < 5) x = 5; if (x > max) x = max;
+        cartBtn.style.left = x + 'px';
+        if (x >= max) { isDragging = false; downloadZip(); resetSlider(); }
+    });
+    window.addEventListener('mouseup', () => { isDragging = false; resetSlider(); });
+
+    // รองรับมือถือ
+    cartBtn.addEventListener('touchstart', (e) => { isDragging = true; startX = e.touches[0].pageX - cartBtn.offsetLeft; });
+    window.addEventListener('touchmove', (e) => {
+        if (!isDragging) return;
+        let x = e.touches[0].pageX - startX;
+        const max = sliderWrapper.offsetWidth - cartBtn.offsetWidth - 5;
+        if (x < 5) x = 5; if (x > max) x = max;
+        cartBtn.style.left = x + 'px';
+        if (x >= max) { isDragging = false; downloadZip(); resetSlider(); }
+    });
+    window.addEventListener('touchend', () => { isDragging = false; resetSlider(); });
+
+    function resetSlider() { cartBtn.style.transition = 'left 0.4s ease'; cartBtn.style.left = '5px'; }
+
+    async function downloadZip() {
+        const zip = new JSZip();
+        processedFiles.forEach(item => {
+            const data = item.canvas.toDataURL('image/jpeg', 0.95).split(',')[1];
+            zip.file(item.name, data, {base64: true});
+        });
+        const blob = await zip.generateAsync({type: "blob"});
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = "fixed_images.zip";
+        link.click();
+    }
+</script>
+
+</body>
+</html>
